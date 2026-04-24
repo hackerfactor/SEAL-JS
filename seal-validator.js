@@ -1135,12 +1135,16 @@
             ok = await verifySignature(pubKeyBin, sigBytes, verifyInput, f.ka || 'rsa', da);
           } catch (e) {
             lastError = `Verification error: ${e.message}`;
-            lastErrorDns = null;
+            lastErrorDns = dns;
             continue;
           }
         }
 
-      if (!ok) { lastError = 'signature mismatch'; continue; }
+      if (!ok) {
+        lastError = 'signature mismatch';
+        lastErrorDns = dns;
+        continue;
+        }
 
       // ✓ Valid!
       result.valid      = true;
