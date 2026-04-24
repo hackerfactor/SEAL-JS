@@ -11,7 +11,7 @@ This code:
 This code currently supports static-files only. It does not support sidecars or streaming data. (The SEAL protocol supports streaming data, but this implementation does not (yet).)
 
 ## Usage
-Load the (seal-validator.html)[seal-validator.html] file into the browser. This will load the seal-validator.js library; there are no other dependencies. Then, drag and drop whatever file(s) you want to evaluate. See (SEAL-C)[https://github.com/hackerfactor/SEAL-C] for the testsuite.
+Load the [seal-validator.html](https://hackerfactor.github.io/SEAL-JS/seal-validator.html) file into the browser. This will load the seal-validator.js library; there are no other dependencies. Then, drag and drop whatever file(s) you want to evaluate. See [SEAL-C](https://github.com/hackerfactor/SEAL-C) for the testsuite.
 
 Alternately, developers can use the seal-validator.js library without seal-validate.html.
 
