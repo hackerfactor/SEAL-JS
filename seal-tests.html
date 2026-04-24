@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SEAL Validator — Unit Tests</title>
+<style>
+  body { font-family: monospace; background: #0f172a; color: #e2e8f0; padding: 1.5rem; }
+  h1   { color: #7dd3fc; margin-bottom: 0.25rem; }
+  p.sub { color: #64748b; margin-bottom: 1.5rem; font-size: 0.85rem; }
+  #summary { font-size: 1.1rem; font-weight: bold; margin-bottom: 1rem; }
+  .pass { color: #22c55e; }
+  .fail { color: #ef4444; }
+  .skip { color: #94a3b8; }
+  .section { color: #f59e0b; margin-top: 1rem; font-weight: bold; }
+  .detail  { color: #94a3b8; margin-left: 2rem; font-size: 0.8rem; }
+  pre { background: #1e293b; padding: 0.75rem; border-radius: 0.4rem;
+        font-size: 0.75rem; overflow-x: auto; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>🧪 SEAL Validator — Unit Tests</h1>
+<p class="sub">Pure browser test suite. No Node.js. No build step. Open this file alongside seal-validator.js.</p>
+<div id="summary">Loading…</div>
+<div id="log"></div>
+
+<script src="seal-validator.js"></script>
+<script>
+'use strict';
+
+// ─── Tiny test framework ────────────────────────────────────────────────────
+const log   = document.getElementById('log');
+const sumEl = document.getElementById('summary');
+let pass = 0, fail = 0, section = '';
+
+function sect(name) {
+  section = name;
+  log.insertAdjacentHTML('beforeend',
+    `<div class="section">── ${name} ──</div>`);
+}
+
+function eq(got, expected) {
+  return JSON.stringify(got) === JSON.stringify(expected);
+}
+
+function check(name, got, expected) {
+  const ok = eq(got, expected);
+  ok ? pass++ : fail++;
+  const cls  = ok ? 'pass' : 'fail';
+  const icon = ok ? '✓' : '✗';
+  log.insertAdjacentHTML('beforeend',
+    `<div class="${cls}">${icon} ${name}</div>`);
+  if (!ok) {
+    log.insertAdjacentHTML('beforeend',
+      `<div class="detail">got:      ${JSON.stringify(got)}</div>` +
+      `<div class="detail">expected: ${JSON.stringify(expected)}</div>`);
+  }
+}
+
+function done() {
+  const allPass = fail === 0;
+  sumEl.className = allPass ? 'pass' : 'fail';
+  sumEl.textContent =
+    `${pass + fail} tests — ${pass} passed, ${fail} failed`;
+}
+
+// ─── Helpers used in tests ──────────────────────────────────────────────────
+const te = new TextEncoder();
+const td = new TextDecoder();
+
+function bytes(str) { return te.encode(str); }
+function str(b, s, e) { return td.decode(b.subarray(s, e)); }
+
+// ─── Run all tests ──────────────────────────────────────────────────────────
+async function runAll() {
+
+  // ════════════════════════════════════════════════════════════
+  sect('parseDNSTXT — unquoted (as returned by real DNS TXT)');
+  // ════════════════════════════════════════════════════════════
+  {
+    const dns = SEAL._parseDNSTXT('seal=1 ka=rsa p=abc123');
+    check('seal field',  dns && dns.seal, '1');
+    check('ka field',    dns && dns.ka,   'rsa');
+    check('p field',     dns && dns.p,    'abc123');
+    check('null for non-SEAL', SEAL._parseDNSTXT('not a seal'), null);
+    check('null for empty',    SEAL._parseDNSTXT(''), null);
+  }
+
+  sect('parseDNSTXT — quoted (wrapped by DoH JSON)');
+  {
+    const d2 = SEAL._parseDNSTXT('seal="1" ka="rsa" kv="2" p="PUBKEY=="');
+    check('seal', d2 && d2.seal, '1');
+    check('kv',   d2 && d2.kv,   '2');
+    check('p',    d2 && d2.p,    'PUBKEY==');
+  }
+
+  sect('parseDNSTXT — _pBin pre-decoded');
+  {
+    // base64 of 0x68 0x65 0x6c 0x6c 0x6f  ("hello")
+    const d3 = SEAL._parseDNSTXT('seal=1 ka=rsa p=aGVsbG8=');
+    check('_pBin is Uint8Array', d3 && d3._pBin instanceof Uint8Array, true);
+    check('_pBin value', d3 && Array.from(d3._pBin), [104,101,108,108,111]);
+  }
+
+  // ════════════════════════════════════════════════════════════
+  sect('computeByteRanges — standard patterns');
+  // ════════════════════════════════════════════════════════════
+  function ranges(spec, fLen, sS, sE, pS=0, pE=0) {
+    return SEAL._computeByteRanges(spec, fLen, sS, sE, pS, pE).ranges;
+  }
+  function rangeErr(spec, fLen, sS, sE, pS=0, pE=0) {
+    return SEAL._computeByteRanges(spec, fLen, sS, sE, pS, pE).error;
+  }
+
+  // ~S,s~  →  [0, sigStart) ++ [sigEnd, EOF)   (most common)
+  check('~S,s~',       ranges('~S,s~',    1000, 400, 600), [[0,400],[600,1000]]);
+  // Same with explicit F and f
+  check('F~S,s~f',     ranges('F~S,s~f',  1000, 400, 600), [[0,400],[600,1000]]);
+  // Single range
+  check('0~500',       ranges('0~500',    1000, 400, 600), [[0,500]]);
+  check('100~900',     ranges('100~900',  1000, 400, 600), [[100,900]]);
+  // Cover previous signature
+  check('P~S,s~f',     ranges('P~S,s~f',  1000, 400, 600, 100, 200), [[100,400],[600,1000]]);
+  check('p~S,s~f',     ranges('p~S,s~f',  1000, 400, 600, 100, 200), [[200,400],[600,1000]]);
+
+  sect('computeByteRanges — arithmetic offsets');
+  // PNG skips the 4-byte CRC that follows the sig value:
+  //   F~S,  s~s+4,  s+8~f
+  //   [0,400] [600,604] [608,1000]
+  check('PNG CRC skip',
+        ranges('F~S,s~s+4,s+8~f', 1000, 400, 600),
+        [[0,400],[600,604],[608,1000]]);
+  // Arithmetic on start
+  check('S+8~s',       ranges('S+8~s',    1000, 400, 600), [[408,600]]);
+  // Arithmetic on end
+  check('F~S-10',      ranges('F~S-10',   1000, 400, 600), [[0,390]]);
+
+  sect('computeByteRanges — edge cases & errors');
+  check('empty spec → no ranges', ranges('', 1000, 400, 600), []);
+  check('overflow returns null', rangeErr('~S,s~', 500, 400, 600) !== null, true);
+  check('range inverted → error', rangeErr('600~400', 1000, 400, 600) !== null, true);
+  // Zero-length range is allowed and silently skipped
+  check('zero-len range skipped', ranges('200~200', 1000, 400, 600), []);
+
+  // ════════════════════════════════════════════════════════════
+  sect('decodeSig — base64');
+  // ════════════════════════════════════════════════════════════
+  {
+    const s = SEAL._decodeSig('aGVsbG8=', 'base64');
+    check('no error',  s.error, null);
+    check('value',     Array.from(s.sigBytes), [104,101,108,108,111]);
+    check('no timestamp', s.timestamp, null);
+  }
+  // URL-safe base64
+  {
+    const s = SEAL._decodeSig('aGVs-G8_', 'base64');
+    check('url-safe base64', s.error, null);
+  }
+
+  sect('decodeSig — hex');
+  {
+    const s = SEAL._decodeSig('68656c6c6f', 'hex');
+    check('lower hex', Array.from(s.sigBytes), [104,101,108,108,111]);
+    const S = SEAL._decodeSig('68656C6C6F', 'HEX');
+    check('upper HEX', Array.from(S.sigBytes), [104,101,108,108,111]);
+    const bad = SEAL._decodeSig('6865zz', 'hex');
+    check('invalid hex → error', typeof bad.error, 'string');
+  }
+
+  sect('decodeSig — date prefix');
+  {
+    // sf=date:base64  — 14-char date + ':' + payload
+    const s = SEAL._decodeSig('20241001120000:aGVsbG8=', 'date:base64');
+    check('timestamp', s.timestamp, '20241001120000');
+    check('payload',   Array.from(s.sigBytes), [104,101,108,108,111]);
+    // sf=date3  — 14 + '.' + 3 sub-second digits
+    const s3 = SEAL._decodeSig('20241001120000.123:aGVsbG8=', 'date3:base64');
+    check('date3 timestamp', s3.timestamp, '20241001120000.123');
+    // Malformed date — colon in wrong place
+    const bad = SEAL._decodeSig('2024:aGVsbG8=', 'date:base64');
+    check('short date → error', typeof bad.error, 'string');
+  }
+
+  sect('decodeSig — bad input');
+  {
+    const b1 = SEAL._decodeSig('!!!', 'base64');
+    check('invalid base64 → error', typeof b1.error, 'string');
+    const b2 = SEAL._decodeSig('', 'base64');
+    check('empty string → error', typeof b2.error, 'string');
+  }
+
+  // ════════════════════════════════════════════════════════════
+  sect('findAllSEALRecords — basic parsing');
+  // ════════════════════════════════════════════════════════════
+  function find(s) { return SEAL._findAllSEALRecords(bytes(s)); }
+
+  {
+    const r = find('<seal seal="1" ka="rsa" d="ex.com" b="~S,s~" s="SIGVAL" />');
+    check('count',    r.length,         1);
+    check('seal',     r[0].fields.seal, '1');
+    check('d',        r[0].fields.d,    'ex.com');
+    check('ka',       r[0].fields.ka,   'rsa');
+    check('b',        r[0].fields.b,    '~S,s~');
+    check('s',        r[0].fields.s,    'SIGVAL');
+    // rawSigStart/End must point exactly to the value bytes
+    const buf = bytes('<seal seal="1" ka="rsa" d="ex.com" b="~S,s~" s="SIGVAL" />');
+    check('rawSig value', str(buf, r[0].rawSigStart, r[0].rawSigEnd), 'SIGVAL');
+  }
+
+  sect('findAllSEALRecords — XMP entity-encoded form');
+  {
+    // Closing with plain />
+    const r1 = find('&lt;seal seal="1" d="ex.com" s="SIG2" />');
+    check('entity + /> count', r1.length,       1);
+    check('entity + /> sig',   r1[0] && r1[0].fields.s, 'SIG2');
+    // Closing with &gt;
+    const r2 = find('&lt;seal seal="1" d="ex.com" s="SIG3" /&gt;');
+    check('entity + /&gt; count', r2.length, 1);
+    // Embedded in surrounding XML text
+    const r3 = find('<foo> &lt;seal seal="1" d="ex.com" s="SIG4" /> </foo>');
+    check('entity embedded', r3.length, 1);
+  }
+
+  sect('findAllSEALRecords — XML PI form');
+  {
+    const r = find('<?seal seal="1" d="ex.com" s="SIG5" ?>');
+    check('PI count', r.length, 1);
+    check('PI sig',   r[0] && r[0].fields.s, 'SIG5');
+    // Case-insensitive <?SEAL
+    const r2 = find('<?SEAL seal="1" d="ex.com" s="SIG6" ?>');
+    check('PI uppercase', r2.length, 1);
+  }
+
+  sect('findAllSEALRecords — multiple records');
+  {
+    const r = find(
+      '<seal seal="1" d="a.com" s="S1" />' +
+      '<seal seal="1" d="b.com" s="S2" />'
+    );
+    check('two records',   r.length, 2);
+    check('first domain',  r[0].fields.d, 'a.com');
+    check('second domain', r[1].fields.d, 'b.com');
+    check('first recEnd < second recStart',
+          r[0].recStart + r[0].recEnd <= r[1].recStart, true);
+  }
+
+  sect('findAllSEALRecords — field value edge cases');
+  {
+    // Backslash escape: \\X in file → X in decoded value (mirrors SealStrDecode)
+    const r1 = find('<seal seal="1" d="ex.com" s="S" info="A\\/B" />');
+    check('backslash escape', r1[0] && r1[0].fields.info, 'A/B');
+
+    // Single-quoted values
+    const r2 = find("<seal seal='1' d='ex.com' s='SQUOTE' />");
+    check('single-quote', r2[0] && r2[0].fields.s, 'SQUOTE');
+
+    // All standard optional fields present
+    const r3 = find('<seal seal="1" ka="rsa" da="sha256" sf="base64" kv="1" ' +
+                    'id="user@ex.com" d="ex.com" b="~S,s~" s="SIG" ' +
+                    'copyright="© 2024" info="Test image" />');
+    check('all fields ka',        r3[0] && r3[0].fields.ka,        'rsa');
+    check('all fields da',        r3[0] && r3[0].fields.da,        'sha256');
+    check('all fields copyright', r3[0] && r3[0].fields.copyright, '© 2024');
+    check('all fields info',      r3[0] && r3[0].fields.info,      'Test image');
+    check('all fields id',        r3[0] && r3[0].fields.id,        'user@ex.com');
+
+    // No s= → parses but rawSigStart is -1
+    const r4 = find('<seal seal="1" d="ex.com" ka="rsa" />');
+    check('no s= → parses',        r4.length,   1);
+    check('no s= → rawSigStart -1', r4[0] && r4[0].rawSigStart, -1);
+  }
+
+  sect('findAllSEALRecords — noise tolerance');
+  {
+    check('no record in empty',   find('').length, 0);
+    check('no record in junk',    find('hello world').length, 0);
+    check('no record in partial', find('<seal').length, 0);
+    // Record after binary-looking content
+    const prefix = '\x00\x01\x02\x03\xFF\xD8\xFF';
+    const r = find(prefix + '<seal seal="1" d="x.com" s="SIG" />');
+    check('record after binary prefix', r.length, 1);
+  }
+
+  // ════════════════════════════════════════════════════════════
+  sect('validateBuffer — no SEAL record');
+  // ════════════════════════════════════════════════════════════
+  {
+    const res = await SEAL.validateBuffer(bytes('no seal here'), 'test.txt');
+    check('count',    res.length,     1);
+    check('valid',    res[0].valid,   false);
+    check('error',    res[0].error,   'No SEAL record found in file');
+    check('filename', res[0].filename,'test.txt');
+  }
+
+  sect('validateBuffer — missing s= field');
+  {
+    const res = await SEAL.validateBuffer(
+      bytes('<seal seal="1" d="ex.com" ka="rsa" />'), 'nosig.txt');
+    check('invalid',  res[0].valid,   false);
+    check('has error', typeof res[0].error, 'string');
+  }
+
+  sect('validateBuffer — attack warnings');
+  {
+    // No F or P → prepend warning
+    const res = await SEAL.validateBuffer(
+      bytes('<seal seal="1" d="ex.com" b="~S,s~" s="SIG" />'),
+      'test.txt',
+      { dnsOverride: 'seal=1 ka=rsa p=aGVsbG8=' }
+    );
+    // Will fail crypto, but warnings should still be populated
+    const hasWarn = res[0].warnings && res[0].warnings.length > 0;
+    check('prepend warning present', hasWarn, true);
+  }
+
+  sect('validateBuffer — dnsOverride (string)');
+  {
+    // Supply a fake DNS record — crypto will fail but DNS lookup succeeds
+    const res = await SEAL.validateBuffer(
+      bytes('<seal seal="1" ka="rsa" da="sha256" b="~S,s~" d="ex.com" s="FAKESIG" />'),
+      'test.txt',
+      { dnsOverride: 'seal=1 ka=rsa p=aGVsbG8=' }
+    );
+    // Should not fail with "DNS lookup failed"
+    check('no dns error', res[0].error !== 'No SEAL DNS record found for seal._seal.ex.com', true);
+    check('domain set',   res[0].domain, 'ex.com');
+  }
+
+  sect('validateBuffer — dnsOverride (object)');
+  {
+    const res = await SEAL.validateBuffer(
+      bytes('<seal seal="1" ka="rsa" da="sha256" b="~S,s~" d="ex.com" s="FAKESIG" />'),
+      'test.txt',
+      { dnsOverride: { seal: '1', ka: 'rsa', p: 'aGVsbG8=', _pBin: new Uint8Array([104,101,108,108,111]) } }
+    );
+    check('object override accepted', res[0].domain, 'ex.com');
+  }
+
+  sect('validateBuffer — dnsOverrideMap');
+  {
+    const res = await SEAL.validateBuffer(
+      bytes('<seal seal="1" ka="rsa" da="sha256" b="~S,s~" d="photos.example" s="FAKESIG" />'),
+      'test.txt',
+      { dnsOverrideMap: { 'photos.example': 'seal=1 ka=rsa p=aGVsbG8=' } }
+    );
+    check('dnsOverrideMap domain', res[0].domain, 'photos.example');
+  }
+
+  sect('validateBuffer — revocation check');
+  {
+    // DNS record with r=20240101000000 means anything signed after that is revoked
+    // sigdate=20240601 < r=20230101 → revoked
+    const res = await SEAL.validateBuffer(
+      bytes('<seal seal="1" ka="rsa" da="sha256" sf="date:base64" b="~S,s~" d="revoke.com" s="20240601120000:FAKESIG" />'),
+      'test.txt',
+      { dnsOverrideMap: { 'revoke.com': 'seal=1 ka=rsa r=20230101000000 p=aGVsbG8=' }, verifyOverride: true }
+    );
+    // sigdate "20230601120000" < revoke "20240101000000" → revoked
+    check('revoked flag', res[0].revoked, true);
+  }
+  {
+    // And endure that pre-revoke time is valid
+    const res = await SEAL.validateBuffer(
+      bytes('<seal seal="1" ka="rsa" da="sha256" sf="date:base64" b="~S,s~" d="revoke.com" s="20230601120000:FAKESIG" />'),
+      'test.txt',
+      { dnsOverrideMap: { 'revoke.com': 'seal=1 ka=rsa r=20240101000000 p=aGVsbG8=' }, verifyOverride: true }
+    );
+    // sigdate "20230601120000" < revoke "20240101000000" → revoked
+    check('before revoked flag', res[0].revoked, false);
+  }
+
+  sect('validateBuffer — global revoke (p=revoke)');
+  {
+    const res = await SEAL.validateBuffer(
+      bytes('<seal seal="1" ka="rsa" da="sha256" b="~S,s~" d="ex.com" s="FAKESIG" />'),
+      'test.txt',
+      { dnsOverride: 'seal=1 ka=rsa p=revoke' }
+    );
+    check('global revoke', res[0].revoked, true);
+  }
+
+  sect('validateBuffer — multiple records: recordIndex / recordCount');
+  {
+    const res = await SEAL.validateBuffer(
+      bytes(
+        '<seal seal="1" d="a.com" b="F~S,s~f" s="SIG1" />' +
+        '<seal seal="1" d="b.com" b="P~S,s~f" s="SIG2" />'
+      ),
+      'multi.jpg',
+      { dnsOverride: 'seal=1 ka=rsa p=aGVsbG8=' }
+    );
+    check('two results',      res.length,           2);
+    check('first index',      res[0].recordIndex,   1);
+    check('second index',     res[1].recordIndex,   2);
+    check('recordCount',      res[0].recordCount,   2);
+    check('first domain',     res[0].domain,        'a.com');
+    check('second domain',    res[1].domain,        'b.com');
+  }
+
+  sect('validateBuffer — kv mismatch rejects DNS record');
+  {
+    // Record says kv=2, DNS says kv=1 → should fail to find a matching DNS record
+    const res = await SEAL.validateBuffer(
+      bytes('<seal seal="1" ka="rsa" da="sha256" kv="2" b="~S,s~" d="ex.com" s="FAKESIG" />'),
+      'test.txt',
+      { dnsOverride: 'seal=1 ka=rsa kv=1 p=aGVsbG8=' }
+    );
+    check('kv mismatch → no match', res[0].valid, false);
+  }
+
+  sect('detectFormat — magic bytes');
+  {
+    const JPEG = new Uint8Array([0xFF,0xD8,0xFF,0xE0]);
+    check('jpeg', SEAL.detectFormat(JPEG), 'jpeg');
+    const PNG  = new Uint8Array([0x89,0x50,0x4E,0x47]);
+    check('png', SEAL.detectFormat(PNG), 'png');
+    const GIF  = new Uint8Array([0x47,0x49,0x46,0x38]);
+    check('gif', SEAL.detectFormat(GIF), 'gif');
+    const PDF  = bytes('%PDF-1.7');
+    check('pdf', SEAL.detectFormat(PDF), 'pdf');
+    const ZIP  = new Uint8Array([0x50,0x4B,0x03,0x04]);
+    check('zip', SEAL.detectFormat(ZIP), 'zip');
+    // BMFF: ftyp at offset 4
+    const MP4  = new Uint8Array([0x00,0x00,0x00,0x20,0x66,0x74,0x79,0x70]);
+    check('bmff/mp4', SEAL.detectFormat(MP4), 'bmff');
+    const XML  = bytes('<?xml version="1.0"');
+    check('xml', SEAL.detectFormat(XML), 'xml');
+  }
+
+
+  // ════════════════════════════════════════════════════════════
+  sect('Format scanner: JPEG');
+  // ════════════════════════════════════════════════════════════
+  {
+    // Build a minimal valid JPEG structure:
+    //   FFD8 + APP8 (ffe8) block containing a SEAL record + FFDA (SOS)
+    //   An APP8 starts with ff e8, then 2-byte length (includes itself),
+    //   then "SEAL\0" (5 bytes), then the SEAL record text.
+    function makeJPEG(sealText) {
+      const sealBytes = bytes(sealText);
+      const appData   = bytes('SEAL\0'); // 5-byte name
+      const blockBody = new Uint8Array(appData.length + sealBytes.length);
+      blockBody.set(appData);
+      blockBody.set(sealBytes, appData.length);
+      const blockLen = blockBody.length + 2; // +2 for length field itself
+      const buf = new Uint8Array(4 + 2 + blockBody.length + 2);
+      buf[0]=0xFF; buf[1]=0xD8;             // SOI
+      buf[2]=0xFF; buf[3]=0xE8;             // APP8
+      buf[4]=(blockLen>>8)&0xFF; buf[5]=blockLen&0xFF; // length
+      buf.set(blockBody, 6);
+      buf[buf.length-2]=0xFF; buf[buf.length-1]=0xDA; // SOS marker
+      return buf;
+    }
+
+    // SEAL record inside APP8
+    const jpegBuf = makeJPEG('<seal seal="1" d="ex.com" b="F~S,s~f" s="SIGJPEG" />');
+    const recs = SEAL._scanByFormat(jpegBuf);
+    check('JPEG: finds record',  recs.length, 1);
+    check('JPEG: correct sig',   recs[0] && recs[0].fields.s, 'SIGJPEG');
+    check('JPEG: coordinate space is full file',
+          recs[0] && recs[0].bytes.length, jpegBuf.length);
+
+    // A JPEG with NO seal should return empty (not fall back to full-file scan)
+    const jpegNoSeal = makeJPEG('no seal here');
+    check('JPEG: no false positives', SEAL._scanByFormat(jpegNoSeal).length, 0);
+
+    // Confirm raw bytes (not JPEG) are NOT identified as JPEG
+    const notJpeg = bytes('<seal seal="1" d="ex.com" s="SIG" />');
+    const notJpegRecs = SEAL._scanByFormat(notJpeg);
+    check('Non-JPEG treated as text', notJpegRecs.length, 1);
+  }
+
+  sect('Format scanner: PNG');
+  {
+    // Minimal PNG: magic + IHDR stub + sEAl chunk + IEND
+    function makePNG(sealText) {
+      const magic = new Uint8Array([0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A]);
+      // Minimal IHDR (13 bytes of zeros)
+      const ihdrData = new Uint8Array(13);
+      const ihdrChunk = makeChunk('IHDR', ihdrData);
+      const sealData = bytes(sealText);
+      const sealChunk = makeChunk('sEAl', sealData);
+      const iendChunk = makeChunk('IEND', new Uint8Array(0));
+      const total = magic.length + ihdrChunk.length + sealChunk.length + iendChunk.length;
+      const out = new Uint8Array(total);
+      let off = 0;
+      out.set(magic, off); off += magic.length;
+      out.set(ihdrChunk, off); off += ihdrChunk.length;
+      out.set(sealChunk, off); off += sealChunk.length;
+      out.set(iendChunk, off);
+      return out;
+    }
+    function makeChunk(name, data) {
+      const chunk = new Uint8Array(12 + data.length);
+      const view = new DataView(chunk.buffer);
+      view.setUint32(0, data.length, false);
+      for (let i=0;i<4;i++) chunk[4+i] = name.charCodeAt(i);
+      chunk.set(data, 8);
+      // CRC placeholder (zeros OK for parsing test)
+      return chunk;
+    }
+
+    const pngBuf = makePNG('<seal seal="1" d="ex.com" b="F~S,s~s+4,s+8~f" s="SIGPNG" />');
+    const recs = SEAL._scanByFormat(pngBuf);
+    check('PNG: finds record', recs.length, 1);
+    check('PNG: correct sig',  recs[0] && recs[0].fields.s, 'SIGPNG');
+
+    // A tEXt chunk should also be scanned
+    const pngText = makePNG('<seal seal="1" d="ex.com" s="SIGTEXT" />');
+    // Manually patch the FourCC to tEXt
+    const pngTextBuf = new Uint8Array(pngText);
+    const sealOff = 8 + 25; // magic + IHDR chunk (13+12=25)
+    pngTextBuf[sealOff + 4] = 0x74; // t
+    pngTextBuf[sealOff + 5] = 0x45; // E
+    pngTextBuf[sealOff + 6] = 0x58; // X
+    pngTextBuf[sealOff + 7] = 0x74; // t
+    check('PNG: tEXt chunk scanned', SEAL._scanByFormat(pngTextBuf).length, 1);
+  }
+
+  sect('Format scanner: ZIP');
+  {
+    // Build a minimal ZIP: local file header + central dir + EOCD with SEAL comment.
+    // The SEAL record coordinate space must be [start_of_zip .. end_of_comment).
+    function makeZIP(sealText) {
+      // Empty local file header for "a.txt"
+      const lfh = new Uint8Array(30 + 5); // 30 header + 5 filename "a.txt"
+      lfh[0]=0x50;lfh[1]=0x4B;lfh[2]=0x03;lfh[3]=0x04; // LFH sig
+      lfh[26]=5;lfh[27]=0; // filename length = 5
+      const fname = bytes('a.txt');
+      lfh.set(fname, 30);
+
+      // Central directory entry
+      const cdfh = new Uint8Array(46 + 5); // 46 header + 5 filename
+      cdfh[0]=0x50;cdfh[1]=0x4B;cdfh[2]=0x01;cdfh[3]=0x02; // CDFH sig
+      cdfh[28]=5;cdfh[29]=0; // filename length = 5
+      cdfh.set(fname, 46);
+      // relative offset of local header = 0
+      cdfh[42]=0;cdfh[43]=0;cdfh[44]=0;cdfh[45]=0;
+
+      const lfhSize  = lfh.length;
+      const cdOffset = lfhSize;
+      const cdSize   = cdfh.length;
+      const sealBytes = bytes(sealText);
+      const commentLen = sealBytes.length;
+
+      // EOCD
+      const eocd = new Uint8Array(22 + commentLen);
+      eocd[0]=0x50;eocd[1]=0x4B;eocd[2]=0x05;eocd[3]=0x06; // EOCD sig
+      eocd[8]=1;eocd[9]=0;   // total entries on disk
+      eocd[10]=1;eocd[11]=0; // total entries
+      eocd[12]=cdSize&0xFF; eocd[13]=(cdSize>>8)&0xFF; eocd[14]=0; eocd[15]=0;
+      eocd[16]=cdOffset&0xFF; eocd[17]=(cdOffset>>8)&0xFF; eocd[18]=0; eocd[19]=0;
+      eocd[20]=commentLen&0xFF; eocd[21]=(commentLen>>8)&0xFF;
+      eocd.set(sealBytes, 22);
+
+      const total = lfhSize + cdSize + eocd.length;
+      const out = new Uint8Array(total);
+      let off = 0;
+      out.set(lfh, off); off += lfhSize;
+      out.set(cdfh, off); off += cdSize;
+      out.set(eocd, off);
+      return out;
+    }
+
+    const sealRecord = '<seal seal="1" d="ex.com" b="F~S,s~f" s="SIGZIP" />';
+    const zipBuf = makeZIP(sealRecord);
+    const recs = SEAL._scanByFormat(zipBuf);
+    check('ZIP: finds record',   recs.length >= 1, true);
+    if (recs.length >= 1) {
+      check('ZIP: correct sig',    recs[0].fields.s, 'SIGZIP');
+      // The coordinate space must be the ZIP sub-file, not the whole outer blob
+      check('ZIP: has scoped bytes', recs[0].bytes instanceof Uint8Array, true);
+    }
+  }
+
+  sect('Format scanner: RIFF (WebP)');
+  {
+    // Minimal RIFF/WebP with a SEAL chunk
+    const sealText = '<seal seal="1" d="ex.com" s="SIGRIFF" />';
+    const sealData = bytes(sealText);
+    const padded   = sealData.length + (sealData.length % 2); // RIFF 2-byte align
+    const fileSize = 4 + 8 + padded; // WEBP type + SEAL chunk (FourCC+len+data)
+    const buf = new Uint8Array(12 + fileSize); // RIFF header (8) + type (4)
+    buf[0]=0x52;buf[1]=0x49;buf[2]=0x46;buf[3]=0x46; // "RIFF"
+    // total size = buf.length - 8
+    const totalSize = buf.length - 8;
+    buf[4]=totalSize&0xFF;buf[5]=(totalSize>>8)&0xFF;
+    buf[6]=(totalSize>>16)&0xFF;buf[7]=(totalSize>>24)&0xFF;
+    buf[8]=0x57;buf[9]=0x45;buf[10]=0x42;buf[11]=0x50; // "WEBP"
+    // SEAL chunk
+    buf[12]=0x53;buf[13]=0x45;buf[14]=0x41;buf[15]=0x4C; // "SEAL"
+    buf[16]=sealData.length&0xFF;buf[17]=(sealData.length>>8)&0xFF;
+    buf[18]=(sealData.length>>16)&0xFF;buf[19]=(sealData.length>>24)&0xFF;
+    buf.set(sealData, 20);
+
+    const recs = SEAL._scanByFormat(buf);
+    check('RIFF: finds SEAL chunk', recs.length, 1);
+    check('RIFF: correct sig', recs[0] && recs[0].fields.s, 'SIGRIFF');
+  }
+
+  sect('Format scanner: BMFF (MP4/HEIC)');
+  {
+    // Minimal BMFF: ftyp atom + SEAL atom
+    const ftyp = new Uint8Array(16);
+    ftyp[0]=0;ftyp[1]=0;ftyp[2]=0;ftyp[3]=16; // length = 16
+    for(let i=0;i<4;i++) ftyp[4+i]='ftyp'.charCodeAt(i);
+    for(let i=0;i<4;i++) ftyp[8+i]='mp42'.charCodeAt(i);
+    for(let i=0;i<4;i++) ftyp[12+i]='mp42'.charCodeAt(i);
+
+    const sealText = '<seal seal="1" d="ex.com" s="SIGBMFF" />';
+    const sealData = bytes(sealText);
+    const sealAtom = new Uint8Array(8 + sealData.length);
+    const sealLen  = sealAtom.length;
+    sealAtom[0]=(sealLen>>24)&0xFF;sealAtom[1]=(sealLen>>16)&0xFF;
+    sealAtom[2]=(sealLen>>8)&0xFF;sealAtom[3]=sealLen&0xFF;
+    for(let i=0;i<4;i++) sealAtom[4+i]='SEAL'.charCodeAt(i);
+    sealAtom.set(sealData, 8);
+
+    const buf = new Uint8Array(ftyp.length + sealAtom.length);
+    buf.set(ftyp); buf.set(sealAtom, ftyp.length);
+    const recs = SEAL._scanByFormat(buf);
+    check('BMFF: finds SEAL atom', recs.length, 1);
+    check('BMFF: correct sig', recs[0] && recs[0].fields.s, 'SIGBMFF');
+  }
+
+  sect('Format scanner: no format cross-contamination');
+  {
+    // A JPEG thumbnail embedded in EXIF must NOT be scanned.
+    // Construct: JPEG with an APP1/EXIF block containing a fake JPEG thumbnail.
+    // The thumbnail's SEAL record should NOT appear in the outer scan.
+    // We simulate this by checking that the JPEG scanner stops at SOS (0xFFDA)
+    // and does not recurse into EXIF thumbnail data.
+    // The simplest test: wrap a SEAL record inside a known-skip label (JFIF).
+    function makeJPEGWithJFIF(sealText) {
+      const sealBytes = bytes(sealText);
+      const jfifLabel = bytes('JFIF\0');
+      const blockBody = new Uint8Array(jfifLabel.length + sealBytes.length);
+      blockBody.set(jfifLabel);
+      blockBody.set(sealBytes, jfifLabel.length);
+      const blockLen = blockBody.length + 2;
+      const buf = new Uint8Array(4 + 2 + blockBody.length + 2);
+      buf[0]=0xFF;buf[1]=0xD8;
+      buf[2]=0xFF;buf[3]=0xE0; // APP0 (JFIF)
+      buf[4]=(blockLen>>8)&0xFF;buf[5]=blockLen&0xFF;
+      buf.set(blockBody, 6);
+      buf[buf.length-2]=0xFF;buf[buf.length-1]=0xDA;
+      return buf;
+    }
+    const jfifBuf = makeJPEGWithJFIF('<seal seal="1" d="ex.com" s="SHOULDNOTFIND" />');
+    check('JPEG: JFIF block not scanned', SEAL._scanByFormat(jfifBuf).length, 0);
+
+    // GIF: SEAL in a non-application block (graphic control 0xf9) should not be found
+    // Only 0xff blocks are scanned in GIF
+    function makeGIFWithGraphicControl(sealText) {
+      const sealData = bytes(sealText);
+      const subLen   = Math.min(255, sealData.length);
+      const buf = new Uint8Array(6 + 3 + 1 + 3 + subLen + 2 + 1); // header + ext + data + trailer
+      // GIF89a header (no GCT)
+      buf.set(bytes('GIF89a'));
+      buf[6]=0;buf[7]=1; // width=1
+      buf[8]=0;buf[9]=1; // height=1
+      buf[10]=0;         // no GCT
+      // Graphic control extension: 0x21 0xf9 (NOT 0xff)
+      let off = 11;
+      buf[off++]=0x21; buf[off++]=0xf9; // graphic control, NOT app extension
+      buf[off++]=subLen;
+      buf.set(sealData.subarray(0,subLen), off); off+=subLen;
+      buf[off++]=0; // end of sub-blocks
+      buf[off++]=0x3b; // trailer
+      return buf;
+    }
+    const gifGC = makeGIFWithGraphicControl('<seal seal="1" d="ex.com" s="SHOULDNOTFIND" />');
+    check('GIF: graphic-control block not scanned', SEAL._scanByFormat(gifGC).length, 0);
+  }
+  done();
+}
+
+runAll().catch(e => {
+  document.getElementById('summary').textContent = 'Test runner error: ' + e.message;
+  document.getElementById('summary').className = 'fail';
+  console.error(e);
+});
+</script>
+</body>
+</html>

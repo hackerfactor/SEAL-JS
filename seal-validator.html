@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SEAL Signature Validator</title>
+<style>
+  :root {
+    --green: #2f2; --red: #f22; --yellow: #ff2; --darkyellow: #881;
+    --blue: #3b82f6;  --grey: #ddd; --bg: #eee;
+    --card: #eed;  --border: #334155; --text: #222;
+    --text2: #229;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; padding: 2rem 1rem; }
+  h1 { font-size: 1.75rem; font-weight: 700; margin-bottom: .25rem; }
+  .subtitle { color: var(--text2); margin-bottom: 1rem; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: .75rem; padding: 1.5rem; margin-bottom: 1rem; }
+  .drop-zone {
+    border: 2px dashed var(--border); border-radius: .75rem; padding: 1rem;
+    text-align: center; cursor: pointer; transition: all .2s;
+    background: var(--bg); margin-bottom: 0.5rem;
+  }
+  .drop-zone.over { border-color: var(--blue); background: #1e3a5f; }
+  .drop-zone p { color: var(--text2); margin-top: .5rem; font-size: .875rem; }
+  .drop-icon { font-size: 2.5rem; }
+  input[type=file] { display: none; }
+  label.btn, button {
+    display: inline-block; padding: .5rem 1.25rem; border-radius: .5rem;
+    background: var(--blue); color: #fff; font-weight: 600; cursor: pointer;
+    border: none; font-size: .875rem; transition: opacity .15s;
+  }
+  label.btn:hover, button:hover { opacity: .85; }
+  button.secondary { background: var(--border); }
+  .url-row { display: flex; gap: .5rem; margin-top: .75rem; }
+  .url-row input {
+    flex: 1; padding: .5rem .75rem; border-radius: .5rem;
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    font-size: .875rem;
+  }
+  .url-row input:focus { outline: none; border-color: var(--blue); }
+  .results { margin-top: 1.5rem; }
+  .result-item {
+    border: 1px solid var(--border); border-radius: .75rem;
+    overflow: hidden; margin-bottom: 1rem;
+  }
+  .result-title {
+    display: flex; align-items: center; gap: .75rem;
+    padding: 1rem 1.25rem; padding-bottom: 0; font-weight: 600;
+  }
+  .result-header {
+    display: flex; align-items: center; gap: .75rem;
+    padding: 1rem 1.25rem; font-weight: 600;
+  }
+  .badge {
+    display: inline-flex; align-items: center; gap: .35rem;
+    padding: .25rem .75rem; border-radius: 9999px; font-size: 1rem; font-weight: 700;
+  }
+  .badge.validauth  { background: #dfd; color: #040; border: 1px solid #000; }
+  .badge.valid      { background: #efd; color: #040; border: 1px solid #000; }
+  .badge.invalid    { background: #fdd; color: #400; border: 1px solid #000; }
+  .badge.revoked    { background: #fdd; color: #400; border: 1px solid #000; }
+  .badge.noseal     { background: #ddd; color: #444; border: 1px solid #000; }
+  .badge.unverified { background: #ffd; color: #440; border: 1px solid #000; }
+  .result-body { padding: 0 1.25rem 1.25rem; }
+  .result-item { background: #fff; }
+  .field-grid { display: grid; grid-template-columns: 140px 1fr; gap: .35rem .75rem; font-size: 1rem; }
+  .field-label { color: var(--text2); font-weight: 500; align-self: baseline; }
+  .field-value { word-break: break-all; }
+  .warn-list { margin-top: .75rem; }
+  .warn-item { color: var(--darkyellow); font-size: 1rem; padding: .2rem 0; }
+  .warn-item::before { content: '⚠ '; }
+  .err-msg  { color: var(--red); font-size: 1rem; margin-top: .5rem; }
+  .divider  { height: 1px; background: var(--border); margin: .75rem 0; }
+  .spinner  { display: inline-block; width: 1rem; height: 1rem; border: 2px solid var(--border); border-top-color: var(--blue); border-radius: 50%; animation: spin .6s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .info-row { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: .5rem; }
+  .info-pill { background: var(--bg); border: 1px solid var(--border); border-radius: .5rem; padding: .2rem .6rem; font-size: .9rem; color: var(--text2); }
+  details > summary { cursor: pointer; color: var(--text2); font-size: 1rem; margin-top: .5rem; }
+  details div { background: var(--bg); border: 1px solid var(--border); border-radius: .5rem; padding: .75rem; font-size: .92rem; margin-top: .5rem; overflow-x: auto; color: var(--text2); white-space: pre-wrap; overflow-wrap: break-word; word-break: break-all; }
+  details pre { background: var(--bg); border: 1px solid var(--border); border-radius: .5rem; padding: .75rem; font-size: .92rem; margin-top: .5rem; overflow-x: auto; color: var(--text2); white-space: pre-wrap; overflow-wrap: break-word; word-break: break-all; }
+  #scan-page-btn { margin-top: .75rem; }
+</style>
+</head>
+<body>
+<h1>🔏 SEAL Validator</h1>
+<p class="subtitle">Verify SEAL (Secure Evidence Attribution Label) signatures — entirely in your browser.</p>
+
+<!-- Drop zone -->
+<div class="card">
+  <h2 style="font-size:1.1rem;margin-bottom:1rem;">Upload files</h2>
+  <div class="drop-zone" id="drop-zone">
+    <div class="drop-icon">📂</div>
+    <label class="btn" for="file-input">Choose files</label>
+    <input type="file" id="file-input" multiple>
+    <p>or drag &amp; drop any image, video, audio, PDF…</p>
+  </div>
+</div>
+
+<div class="results" id="results"></div>
+
+<script src="seal-validator.js"></script>
+<script>
+const resultsEl = document.getElementById('results');
+
+function formatTimestamp(ts) {
+  if (!ts) return null;
+  // YYYYMMDDhhmmss[.N+]  →  YYYY-MM-DD hh:mm:ss[.N+] GMT
+  const m = ts.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\.\d+)?$/);
+  if (!m) return ts;
+  const [, yyyy, mo, dd, hh, mm, ss, frac] = m;
+  return `${yyyy}-${mo}-${dd} ${hh}:${mm}:${ss}${frac || ''} GMT`;
+}
+
+function isUnverifiedError(r) {
+  if (!r.error) return false;
+  return r.error.startsWith('No SEAL DNS record') ||
+         r.error.startsWith('DNS lookup failed');
+}
+
+function statusBadge(r) {
+  if (r.revoked)            return `<span class="badge revoked">⚠ Revoked</span>`;
+  if (r.valid) {
+    let s = '<span class="badge valid">✓ Valid signature</span>';
+    if (r.auth) { s += '<span class="badge valid">✓ Authenticated signature</span>'; }
+    else { s += '<span class="badge unverified">⚠ Not authenticated</span>'; }
+    return(s);
+    }
+  if (r.error === 'No SEAL record found in file')
+                            return `<span class="badge noseal">— No SEAL</span>`;
+  if (isUnverifiedError(r)) return `<span class="badge unverified">? Unverified</span>`;
+  return `<span class="badge invalid">✗ Invalid</span>`;
+}
+
+function renderResult(result, title) {
+  const f = result.fields || {};
+  if (f.srcd && !f.src) { f.src='Unspecified file'; }
+  const fields = [
+    ['Rec #',      (result.recordIndex && result.recordCount > 1) ? `${result.recordIndex} / ${result.recordCount}` : ''],
+    ['Domain',     f.d     || ''],
+    ['Signed by',  f.id    || f.d || ''],
+    ['Copyright',  f.copyright || ''],
+    ['Comment',    f.info  || ''],
+    ['Timestamp',  formatTimestamp(result.timestamp) || ''],
+    ['Based on',    f.src  || ''],
+    ['Signed range', f.byteDesc  || ''],
+  ].filter(([,v]) => v && v !== '');
+  const cryptofields = [
+    ['Key algorithm',    f.ka    || ''],
+    ['Digest algorithm', f.da    || ''],
+    ['Signature format', f.sf    || ''],
+    ['Signed bytes', f.byteRanges  || ''],
+    ['Signature bytes', f.sigRange  || ''],
+  ].filter(([,v]) => v && v !== '');
+
+  if (result.debugDigest) { f['Computed Digest'] = result.debugDigest.match(/.{1,32}/g).join(' '); }
+  if (result.matchedDNS) {
+    Object.keys(result.matchedDNS).forEach(key => {
+      if (key.startsWith('_')) {
+        delete result.matchedDNS[key];
+        }
+      });
+    }
+
+  const warningsHtml = (result.warnings || []).length
+    ? `<div class="warn-list">${result.warnings.map(w => `<div class="warn-item">${esc(w)}</div>`).join('')}</div><br>`
+    : '';
+
+  const errorHtml = result.error && !result.valid
+    ? `<div class="err-msg">Error: ${esc(result.error)}</div><br>` : '';
+
+  const cryptoFieldsHtml = cryptofields.length ? `
+    <details><summary>Algorithm details</summary>
+    <div class="field-grid">${cryptofields.map(([k,v]) =>
+      `<span class="field-label">${esc(k)}</span><span class="field-value">${esc(v)}</span>`
+    ).join('')}</div></details>` : '';
+
+  const fieldsHtml = fields.length ? `
+    <div class="field-grid">${fields.map(([k,v]) =>
+      `<span class="field-label">${esc(k)}</span><span class="field-value">${esc(v)}</span>`
+    ).join('')}</div>` : '';
+
+  const rawHtml = (Object.keys(f).length || result.matchedDNS) ? `
+    <details><summary>Raw SEAL fields</summary>
+    <pre>${JSON.stringify(f, null, 2)}</pre>
+    </details>
+    ${result.matchedDNS ? `<details><summary>Matched DNS record</summary>
+    <pre>${JSON.stringify(result.matchedDNS, null, 2)}</pre>
+    </details>` : ''}` : '';
+
+  return `
+      <div class='result-title' style="color:var(--text2)">${esc(title)}</div>
+      <div class="result-header">
+        ${statusBadge(result)}
+      </div>
+      <div class="result-body">
+        ${errorHtml}${warningsHtml}${fieldsHtml}${cryptoFieldsHtml}${rawHtml}
+      </div>`;
+}
+
+function esc(s) {
+  const map = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  };
+  return String(s).replace(/[&<>"']/g, m => map[m]);
+}
+
+function addLoading(title) {
+  const id = 'r' + Math.random().toString(36).slice(2);
+  resultsEl.insertAdjacentHTML('afterbegin', `
+    <div id="${id}" class="result-item">
+      <div class="result-header">
+        <span class="spinner"></span>
+        <span style="color:var(--text2);font-size:1rem">${esc(title)}</span>
+      </div>
+    </div>`);
+  return id;
+}
+
+function replaceLoading(id, html) {
+  const el = document.getElementById(id);
+  if (el) el.outerHTML = html;
+  else resultsEl.insertAdjacentHTML('afterbegin', html);
+}
+
+async function validateAndShow(bufferPromise, filename) {
+  const id = addLoading(filename);
+  try {
+    const buf = await bufferPromise;
+    const results = await SEAL.validateBuffer(buf, filename);
+    let s = results.map(r => renderResult(r, filename)).join('');
+    replaceLoading(id,`<div class="result-item">${s}</div>`);
+  } catch (e) {
+    replaceLoading(id, `<div class="result-item"><div class="result-header">
+      <span class="badge invalid">✗ Error</span>
+      <span style="color:var(--text2);font-size:1rem">${esc(filename)}</span>
+      </div><div class="result-body"><div class="err-msg">${esc(e.message)}</div></div></div>`);
+  }
+}
+
+// File input
+document.getElementById('file-input').addEventListener('change', e => {
+  for (const file of e.target.files)
+    validateAndShow(file.arrayBuffer(), file.name);
+  e.target.value = '';
+});
+
+// Drag and drop
+const drop = document.getElementById('drop-zone');
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', e => {
+  e.preventDefault(); drop.classList.remove('over');
+  for (const file of e.dataTransfer.files)
+    validateAndShow(file.arrayBuffer(), file.name);
+});
+
+// Initial loading form URL
+(function () {
+  const params = new URLSearchParams(window.location.search);
+  const source = params.get('source');
+  if (source && /^https?:\/\//i.test(source)) {
+    validateAndShow(
+      fetch(source).then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status} fetching URL`);
+        return r.arrayBuffer();
+      }),
+      source
+    );
+  }
+})();
+</script>
+</body>
+</html>
