@@ -877,9 +877,10 @@
   // ═══════════════════════════════════════════════════════════════
 
   function isRevoked(sigdate, dnsFields) {
+    if (dnsFields.p === 'revoke') return true;
     const r = dnsFields.r;
-    if (!r) return false;
-    if (!r || r === '' || r === 'revoke') return true; // global revoke
+    if (r === undefined || r === null) return false;
+    if (r === '' || r === 'revoke' || r === true) return true; // global revoke
     if (!sigdate) return true;
     // r= is a date string; if sigdate >= r, it's revoked
     const minLen = Math.min(sigdate.length, r.length);
@@ -1050,13 +1051,22 @@
 
     let dnsRecords = [];
     if (opts && opts.dnsOverride) {
-      // dnsOverride can be: string (raw TXT) or object (pre-parsed fields)
+      // dnsOverride can be: string (raw TXT), object (pre-parsed fields), or array
       const ov = opts.dnsOverride;
-      const parsed = typeof ov === 'string' ? parseDNSTXT(ov) : ov;
-      if (parsed) dnsRecords = [parsed];
+      if (Array.isArray(ov)) {
+        dnsRecords = ov.map(x => typeof x === 'string' ? parseDNSTXT(x) : x).filter(Boolean);
+      } else {
+        const parsed = typeof ov === 'string' ? parseDNSTXT(ov) : ov;
+        if (parsed) dnsRecords = [parsed];
+      }
     } else if (opts && opts.dnsOverrideMap && opts.dnsOverrideMap[f.d]) {
-      const parsed = parseDNSTXT(opts.dnsOverrideMap[f.d]);
-      if (parsed) dnsRecords = [parsed];
+      const ov = opts.dnsOverrideMap[f.d];
+      if (Array.isArray(ov)) {
+        dnsRecords = ov.map(x => typeof x === 'string' ? parseDNSTXT(x) : x).filter(Boolean);
+      } else {
+        const parsed = typeof ov === 'string' ? parseDNSTXT(ov) : ov;
+        if (parsed) dnsRecords = [parsed];
+      }
     } else {
       try { dnsRecords = await dnsLookup(dnsName); }
       catch (e) { result.error = `DNS lookup failed: ${e.message}`; return result; }
@@ -1078,22 +1088,22 @@
       // Check field compatibility (seal=, ka=, uid=, kv=)
       if (!dnsRecordMatches(f, dns)) continue;
 
-      // Check for global revoke (p= is "revoke" or absent)
+      // Check r= / p=revoke revocation BEFORE attempting crypto
+      if (isRevoked(timestamp, dns)) {
+        result.revoked    = true;
+        result.error      = (dns.p === 'revoke' || dns.r === 'revoke' || dns.r === '') ? 'domain default revoke' : 'public key revoked';
+        result.matchedDNS = dns;
+        return result;
+      }
+
+      // Check for key presence
       const dnsKey = dns.p || dns.pkd;
-      if (!dnsKey || dnsKey === 'revoke') {
+      if (!dnsKey) {
+        // Record has no key and was not revoked by r=.
+        // Save as potential global revoke if no other record provides a key.
         globalRevoke = 'domain default revoke';
         globalRevokeDns = dns;
         continue;
-      }
-
-      // Check r= revocation BEFORE attempting crypto — a DNS record with a
-      // real public key AND r=revoke means the key (and all sigs by it) are
-      // revoked regardless of whether the signature itself verifies.
-      if (isRevoked(timestamp, dns)) {
-        result.revoked    = true;
-        result.error      = 'public key revoked';
-        result.matchedDNS = dns;
-        return result;
       }
 
       // Figure out which public key to use based on inline status
