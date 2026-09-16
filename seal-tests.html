@@ -348,24 +348,50 @@ async function runAll() {
   sect('validateBuffer — revocation check');
   {
     // DNS record with r=20240101000000 means anything signed after that is revoked
-    // sigdate=20240601 < r=20230101 → revoked
+    // sigdate=20240601 > r=20230101 → revoked
     const res = await SEAL.validateBuffer(
       bytes('<seal seal="1" ka="rsa" da="sha256" sf="date:base64" b="~S,s~" d="revoke.com" s="20240601120000:FAKESIG" />'),
       'test.txt',
       { dnsOverrideMap: { 'revoke.com': 'seal=1 ka=rsa r=20230101000000 p=aGVsbG8=' }, verifyOverride: true }
     );
-    // sigdate "20230601120000" < revoke "20240101000000" → revoked
     check('revoked flag', res[0].revoked, true);
   }
   {
-    // And endure that pre-revoke time is valid
+    // And ensure that pre-revoke time is valid
     const res = await SEAL.validateBuffer(
       bytes('<seal seal="1" ka="rsa" da="sha256" sf="date:base64" b="~S,s~" d="revoke.com" s="20230601120000:FAKESIG" />'),
       'test.txt',
       { dnsOverrideMap: { 'revoke.com': 'seal=1 ka=rsa r=20240101000000 p=aGVsbG8=' }, verifyOverride: true }
     );
-    // sigdate "20230601120000" < revoke "20240101000000" → revoked
     check('before revoked flag', res[0].revoked, false);
+  }
+  {
+    // DNS record with r= without p= revokes post-revoke timestamp
+    const res = await SEAL.validateBuffer(
+      bytes('<seal seal="1" ka="rsa" da="sha256" sf="date:base64" b="~S,s~" d="revoke.com" s="20240601120000:FAKESIG" />'),
+      'test.txt',
+      { dnsOverrideMap: { 'revoke.com': ['seal=1 ka=rsa r=20230101000000', 'seal=1 ka=rsa p=aGVsbG8='] }, verifyOverride: true }
+    );
+    check('r= without p= revokes post-revoke date', res[0].revoked, true);
+  }
+  {
+    // DNS record with r= without p= does not revoke pre-revoke timestamp if key matches another record
+    const res = await SEAL.validateBuffer(
+      bytes('<seal seal="1" ka="rsa" da="sha256" sf="date:base64" b="~S,s~" d="revoke.com" s="20220601120000:FAKESIG" />'),
+      'test.txt',
+      { dnsOverrideMap: { 'revoke.com': ['seal=1 ka=rsa r=20230101000000', 'seal=1 ka=rsa p=aGVsbG8='] }, verifyOverride: true }
+    );
+    check('r= without p= allows pre-revoke date with matching key', res[0].revoked, false);
+    check('r= without p= valid pre-revoke date', res[0].valid, true);
+  }
+  {
+    // DNS record with r=revoke
+    const res = await SEAL.validateBuffer(
+      bytes('<seal seal="1" ka="rsa" da="sha256" b="~S,s~" d="revoke.com" s="FAKESIG" />'),
+      'test.txt',
+      { dnsOverrideMap: { 'revoke.com': 'seal=1 ka=rsa r=revoke p=aGVsbG8=' } }
+    );
+    check('r=revoke flag', res[0].revoked, true);
   }
 
   sect('validateBuffer — global revoke (p=revoke)');
